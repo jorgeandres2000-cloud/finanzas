@@ -185,13 +185,47 @@ const transactions = [];
       <div id="txFooter" class="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 border-t border-slate-200 dark:border-slate-800 flex justify-between tabular"></div>
     </section>
 
-    <div class="flex items-center justify-center gap-2 text-[11px] text-slate-400 dark:text-slate-500 pb-4">
+    <div class="flex items-center justify-center gap-2 text-[11px] text-slate-400 dark:text-slate-500 pb-20">
       <span id="syncLabel">—</span>
       <button id="refreshBtn" class="font-medium text-indigo-600 dark:text-indigo-400">Actualizar</button>
       <span>·</span>
       <button id="connectBtn" class="font-medium text-indigo-600 dark:text-indigo-400">Conectar</button>
     </div>
   </main>
+
+  <!-- Manual entry: Nu (push-only alerts), cash, or any card charge that Apple Pay didn't capture -->
+  <button id="addBtn" aria-label="Agregar gasto"
+          class="fixed z-30 right-4 h-14 w-14 rounded-full bg-indigo-600 text-white shadow-lg shadow-indigo-500/30 grid place-items-center active:scale-95 transition"
+          style="bottom: calc(1rem + env(safe-area-inset-bottom))">
+    <svg class="h-7 w-7" viewBox="0 0 20 20" fill="currentColor"><path d="M10 4a1 1 0 011 1v4h4a1 1 0 110 2h-4v4a1 1 0 11-2 0v-4H5a1 1 0 110-2h4V5a1 1 0 011-1z"/></svg>
+  </button>
+
+  <div id="addSheet" class="hidden fixed inset-0 z-40">
+    <div data-close class="absolute inset-0 bg-slate-900/50"></div>
+    <form id="addForm" class="absolute inset-x-0 bottom-0 max-w-lg mx-auto rounded-t-3xl bg-white dark:bg-slate-900 p-5 space-y-3"
+          style="padding-bottom: calc(1.25rem + env(safe-area-inset-bottom))">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-bold">Agregar gasto</h2>
+        <button type="button" data-close class="text-sm font-medium text-slate-500 dark:text-slate-400">Cancelar</button>
+      </div>
+      <label class="block">
+        <span class="text-xs font-medium text-slate-500 dark:text-slate-400">Monto</span>
+        <input id="addAmount" required inputmode="numeric" autocomplete="off" placeholder="$ 0"
+               class="mt-1 w-full h-14 px-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-2xl font-bold tabular focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </label>
+      <label class="block">
+        <span class="text-xs font-medium text-slate-500 dark:text-slate-400">Comercio</span>
+        <input id="addMerchant" required autocomplete="off" placeholder="Ej. Tostao, Uber, D1"
+               class="mt-1 w-full h-12 px-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500">
+      </label>
+      <label class="block">
+        <span class="text-xs font-medium text-slate-500 dark:text-slate-400">Tarjeta</span>
+        <select id="addAcct" class="mt-1 w-full h-12 px-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500"></select>
+      </label>
+      <p id="addMsg" class="hidden text-sm"></p>
+      <button id="addSave" type="submit" class="w-full h-12 rounded-xl bg-indigo-600 text-white font-semibold disabled:opacity-50">Guardar</button>
+    </form>
+  </div>
 
 <script>
 (() => {
@@ -812,6 +846,7 @@ const transactions = [];
       const raw = Array.isArray(json) ? json : json.transactions;
       if (!Array.isArray(raw)) throw new Error('formato inesperado');
       store.set('mf.cache', { at: Date.now(), raw });
+      errorBox.classList.add('hidden');
       $('#syncLabel').textContent = `Actualizado ${timeFmt(new Date())}`;
       setData(raw);
     } catch (err) {
@@ -835,6 +870,59 @@ const transactions = [];
     errorBox.classList.add('hidden');
     load();
   };
+
+  // ---------- Manual entry ----------
+  // Writes through the same GET endpoint the app reads from (Apps Script POSTs fail behind Google's redirect).
+  const DEFAULT_BANKS = ['Nu', 'BBVA', 'RappiCard', 'Bancolombia', 'Efectivo'];
+  const sheet = $('#addSheet');
+  const addMsg = (text, ok) => {
+    const m = $('#addMsg');
+    m.className = `text-sm ${text ? '' : 'hidden'} ${ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`;
+    m.textContent = text || '';
+  };
+
+  function openAdd() {
+    if (!dataUrl()) { $('#connectBtn').click(); return; }
+    // Cards already seen in the data (with their digits) first, then plain banks not seen yet
+    const seen = new Map();
+    data.forEach((t) => { if (t.card) seen.set(`${t.bank}|${t.card}`, t.acct); });
+    const opts = [...seen].map(([v, label]) => ({ v, label }));
+    DEFAULT_BANKS.forEach((b) => { if (!opts.some((o) => o.v.startsWith(b + '|'))) opts.push({ v: `${b}|`, label: b }); });
+    const last = store.get('mf.lastAcct', 'Nu|');
+    $('#addAcct').innerHTML = opts.map((o) => `<option value="${esc(o.v)}"${o.v === last || (last === 'Nu|' && o.v.startsWith('Nu|')) ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+    $('#addAmount').value = ''; $('#addMerchant').value = '';
+    addMsg('');
+    $('#addSave').disabled = false;
+    sheet.classList.remove('hidden');
+    setTimeout(() => $('#addAmount').focus(), 50);
+  }
+  const closeAdd = () => sheet.classList.add('hidden');
+
+  $('#addBtn').onclick = openAdd;
+  sheet.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeAdd(); });
+  $('#addForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const amount = $('#addAmount').value.trim();
+    const merchant = $('#addMerchant').value.trim();
+    if (!isFinite(parseAmount(amount)) || parseAmount(amount) <= 0) { addMsg('Escribe un monto válido.'); return; }
+    const [bank, card] = $('#addAcct').value.split('|');
+    store.set('mf.lastAcct', $('#addAcct').value);
+    const q = new URLSearchParams({ amount, merchant, bank, card, source: 'manual' });
+    $('#addSave').disabled = true;
+    addMsg('Guardando…', true);
+    try {
+      const res = await fetch(`${dataUrl()}&${q}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (json.transactions) throw new Error('el Sheet usa el código viejo: crea una "Nueva versión" en Apps Script');
+      if (!json.ok) throw new Error(json.error || 'error desconocido');
+      closeAdd();
+      load();
+    } catch (err) {
+      addMsg(`No se guardó: ${err.message}`);
+      $('#addSave').disabled = false;
+    }
+  };
+
   // Opening the app from the Home Screen brings it to the foreground: pull fresh data
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && Date.now() - lastLoad > 60000) load();
