@@ -1,0 +1,853 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Finanzas">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#020617" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<title>Mis Finanzas</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  body {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    -webkit-tap-highlight-color: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  }
+  .tabular { font-variant-numeric: tabular-nums; }
+  select { -webkit-appearance: none; appearance: none; }
+  details > summary { list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details[open] .chev { transform: rotate(90deg); }
+</style>
+
+<!-- ===================================================================
+     DATA — the real data lives in the Google Sheet (connected with the
+     "Conectar" button). This array stays empty; it only documents the
+     shape of a transaction. Schema per item:
+       bank     "BBVA" | "Bancolombia" | "Nu" | "RappiCard"
+       card     last 4 digits (optional, "4521") — separates cards of the same bank
+       amount   number (45000) or string ("$45,000.00" / "45.000,00")
+       merchant string
+       date     "yyyy-MM-ddTHH:mm"  (also accepts "dd/MM/yyyy HH:mm")
+       category string (optional — auto-detected from merchant if empty)
+       type     "expense" (default) | "income" | "refund" | "payment" | "declined"
+       status   "pending" for pre-authorizations (optional)
+       source   "email" | "applepay" | "manual" (optional — used to spot duplicates)
+     =================================================================== -->
+<script>
+const transactions = [];
+</script>
+</head>
+
+<body class="bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased">
+
+  <!-- Header / month navigation -->
+  <header class="sticky top-0 z-20 backdrop-blur bg-slate-50/80 dark:bg-slate-950/80 border-b border-slate-200/70 dark:border-slate-800/70">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+      <div>
+        <p class="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400 font-semibold">Mis Finanzas</p>
+        <h1 id="monthLabel" class="text-xl font-bold leading-tight">—</h1>
+      </div>
+      <div class="flex items-center gap-1">
+        <button id="prevMonth" aria-label="Mes anterior" class="h-10 w-10 rounded-full grid place-items-center hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-30">
+          <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M12.7 15.3a1 1 0 01-1.4 0l-4.6-4.6a1 1 0 010-1.4l4.6-4.6a1 1 0 111.4 1.4L8.8 10l3.9 3.9a1 1 0 010 1.4z" clip-rule="evenodd"/></svg>
+        </button>
+        <button id="todayMonth" class="h-9 px-3 rounded-full text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-800">Hoy</button>
+        <button id="nextMonth" aria-label="Mes siguiente" class="h-10 w-10 rounded-full grid place-items-center hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-30">
+          <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.3 4.7a1 1 0 011.4 0l4.6 4.6a1 1 0 010 1.4l-4.6 4.6a1 1 0 11-1.4-1.4l3.9-3.9-3.9-3.9a1 1 0 010-1.4z" clip-rule="evenodd"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 py-4 space-y-4">
+
+    <div id="errorBox" class="hidden rounded-2xl border border-red-300 bg-red-50 text-red-800 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300 p-4 text-sm"></div>
+    <div id="warnBox" class="hidden rounded-2xl border border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300 p-3 text-sm"></div>
+
+    <!-- KPIs -->
+    <section class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="col-span-2 md:col-span-1 rounded-2xl p-4 bg-gradient-to-br from-indigo-600 to-violet-600 text-white shadow-lg shadow-indigo-500/20">
+        <p class="text-xs font-medium text-indigo-100">Gastado este mes</p>
+        <p id="kpiTotal" class="text-3xl font-bold tabular mt-1">—</p>
+        <p id="kpiCount" class="text-xs text-indigo-100 mt-1">—</p>
+      </div>
+      <div class="rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+        <p class="text-xs font-medium text-slate-500 dark:text-slate-400">vs. mes anterior</p>
+        <p id="kpiDelta" class="text-2xl font-bold tabular mt-1">—</p>
+        <p id="kpiDeltaSub" class="text-xs text-slate-500 dark:text-slate-400 mt-1">—</p>
+      </div>
+      <div class="rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+        <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Promedio diario</p>
+        <p id="kpiDaily" class="text-2xl font-bold tabular mt-1">—</p>
+        <p id="kpiDailySub" class="text-xs text-slate-500 dark:text-slate-400 mt-1">—</p>
+      </div>
+      <div class="col-span-2 md:col-span-1 rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+        <p class="text-xs font-medium text-slate-500 dark:text-slate-400">Categoría principal</p>
+        <p id="kpiTop" class="text-2xl font-bold mt-1 truncate">—</p>
+        <p id="kpiTopSub" class="text-xs text-slate-500 dark:text-slate-400 mt-1 tabular">—</p>
+      </div>
+    </section>
+
+    <!-- Charts -->
+    <section class="grid md:grid-cols-2 gap-3">
+      <div class="rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+        <div class="flex items-baseline justify-between">
+          <h2 class="font-semibold">Por categoría</h2>
+          <span class="text-xs text-slate-500 dark:text-slate-400">Toca para filtrar</span>
+        </div>
+        <div class="relative h-52 mt-3">
+          <canvas id="catChart"></canvas>
+          <div class="absolute inset-0 grid place-items-center pointer-events-none">
+            <div class="text-center">
+              <p class="text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">Total</p>
+              <p id="catCenter" class="text-lg font-bold tabular">—</p>
+            </div>
+          </div>
+        </div>
+        <div id="catLegend" class="mt-3 divide-y divide-slate-100 dark:divide-slate-800"></div>
+      </div>
+
+      <div class="rounded-2xl p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex flex-col">
+        <div class="flex items-baseline justify-between">
+          <h2 class="font-semibold">Últimos 6 meses</h2>
+          <span class="text-xs text-slate-500 dark:text-slate-400">Toca un mes</span>
+        </div>
+        <div class="relative h-52 md:flex-1 md:min-h-[13rem] mt-3">
+          <canvas id="trendChart"></canvas>
+        </div>
+        <h3 class="text-xs font-medium text-slate-500 dark:text-slate-400 mt-4 mb-2">Por tarjeta</h3>
+        <div id="bankSplit" class="space-y-2"></div>
+      </div>
+    </section>
+
+    <!-- Automatic review -->
+    <details id="review" class="hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
+      <summary class="p-4 flex items-center justify-between cursor-pointer select-none">
+        <div class="flex items-center gap-2">
+          <svg class="chev h-4 w-4 text-slate-400 transition-transform" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.3 4.7a1 1 0 011.4 0l4.6 4.6a1 1 0 010 1.4l-4.6 4.6a1 1 0 11-1.4-1.4l3.9-3.9-3.9-3.9a1 1 0 010-1.4z" clip-rule="evenodd"/></svg>
+          <h2 class="font-semibold whitespace-nowrap">Ajustes</h2>
+          <span id="reviewCount" class="px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">0</span>
+        </div>
+        <span id="reviewSaved" class="whitespace-nowrap text-xs text-slate-500 dark:text-slate-400 tabular"></span>
+      </summary>
+      <div id="reviewList" class="divide-y divide-slate-100 dark:divide-slate-800 border-t border-slate-200 dark:border-slate-800"></div>
+    </details>
+
+    <!-- Transactions -->
+    <section class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
+      <div class="p-4 space-y-3 border-b border-slate-200 dark:border-slate-800">
+        <div class="flex items-center justify-between">
+          <h2 class="font-semibold">Movimientos</h2>
+          <button id="clearFilters" class="hidden text-sm font-medium text-indigo-600 dark:text-indigo-400">Limpiar filtros</button>
+        </div>
+        <div class="relative">
+          <svg class="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.45 4.39l3.08 3.08a1 1 0 01-1.42 1.42l-3.08-3.08A7 7 0 012 9z" clip-rule="evenodd"/></svg>
+          <input id="search" type="search" placeholder="Buscar comercio, categoría…" autocomplete="off"
+                 class="w-full h-11 pl-9 pr-3 rounded-xl bg-slate-100 dark:bg-slate-800 border-0 text-base placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <select id="fScope" class="h-10 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="month">Este mes</option>
+            <option value="all">Todo el historial</option>
+          </select>
+          <select id="fBank" class="h-10 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"></select>
+          <select id="fCat" class="h-10 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"></select>
+          <select id="fSort" class="h-10 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+            <option value="date">Más recientes</option>
+            <option value="amount">Mayor monto</option>
+          </select>
+        </div>
+        <p class="text-xs text-slate-500 dark:text-slate-400">Toca un movimiento para excluirlo o volver a contarlo.</p>
+      </div>
+
+      <table class="w-full text-sm">
+        <thead class="text-left text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-900/60">
+          <tr>
+            <th class="hidden sm:table-cell py-2 pl-4 pr-2 font-medium">Fecha</th>
+            <th class="py-2 pl-4 sm:pl-2 pr-2 font-medium">Comercio</th>
+            <th class="hidden sm:table-cell py-2 px-2 font-medium">Categoría</th>
+            <th class="hidden sm:table-cell py-2 px-2 font-medium">Tarjeta</th>
+            <th class="py-2 pl-2 pr-4 font-medium text-right">Monto</th>
+          </tr>
+        </thead>
+        <tbody id="txBody"></tbody>
+      </table>
+      <div id="txEmpty" class="hidden p-8 text-center text-sm text-slate-500 dark:text-slate-400"></div>
+      <div id="txFooter" class="px-4 py-3 text-xs text-slate-500 dark:text-slate-400 border-t border-slate-200 dark:border-slate-800 flex justify-between tabular"></div>
+    </section>
+
+    <div class="flex items-center justify-center gap-2 text-[11px] text-slate-400 dark:text-slate-500 pb-4">
+      <span id="syncLabel">—</span>
+      <button id="refreshBtn" class="font-medium text-indigo-600 dark:text-indigo-400">Actualizar</button>
+      <span>·</span>
+      <button id="connectBtn" class="font-medium text-indigo-600 dark:text-indigo-400">Conectar</button>
+    </div>
+  </main>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- Config ----------
+  const CONFIG = {
+    // Leave empty: the Sheet URL is entered on the phone with the "Conectar" button and stored there.
+    DATA_URL: '',
+    // Last 4 digits → friendly name shown next to the bank, e.g. '4291': 'Visa Infinite'.
+    // Optional — this file is public, so it is left empty.
+    CARDS: {},
+    DUP_WINDOW_MIN: 10,      // same charge reported twice (Apple Pay + email) within this many minutes
+    PREAUTH_WINDOW_DAYS: 7,  // a pending charge is replaced by the final one within this window
+    REFUND_WINDOW_DAYS: 45,  // a refund/reversal is matched to a purchase up to this many days back
+  };
+
+  const MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const MONTHS_SHORT = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const PALETTE = ['#6366f1','#f59e0b','#10b981','#ef4444','#06b6d4','#ec4899','#8b5cf6','#84cc16','#f97316','#14b8a6'];
+  const OTHER_COLOR = '#94a3b8';
+  // Used when a transaction arrives without a category. Keywords are matched against the lowercase merchant.
+  const CATEGORY_RULES = {
+    'Mercado':       ['exito','éxito','carulla','d1','ara ','jumbo','olimpica','olímpica','makro','metro ','pricesmart','surtimax','oxxo','justo y bueno','isimo'],
+    'Restaurantes':  ['rappi','restaurante','crepes','frisby','mcdonald','burger','kfc','starbucks','juan valdez','tostao','domino','pizza','ifood'],
+    'Transporte':    ['uber','didi','cabify','indriver','terpel','primax','texaco','biomax','peaje','parqueadero','metro de','civica'],
+    'Suscripciones': ['netflix','spotify','apple.com','icloud','google','youtube','disney','hbo','max ','prime video','amazon prime','chatgpt','openai'],
+    'Salud':         ['farmacia','drogueria','droguería','cruz verde','pasteur','colsubsidio','locatel','eps','clinica','clínica'],
+    'Servicios':     ['epm','claro','movistar','tigo','etb','une ','vanti','codensa','enel','agua'],
+    'Compras':       ['falabella','amazon','mercado libre','mercadolibre','zara','homecenter','alkosto','ktronix','h&m','adidas','nike'],
+  };
+  const BANK_STYLE = {
+    bancolombia: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-400/15 dark:text-yellow-300',
+    bbva:        'bg-blue-100 text-blue-800 dark:bg-blue-400/15 dark:text-blue-300',
+    nu:          'bg-purple-100 text-purple-800 dark:bg-purple-400/15 dark:text-purple-300',
+    rappicard:   'bg-orange-100 text-orange-800 dark:bg-orange-400/15 dark:text-orange-300',
+  };
+  const BANK_BAR = { bancolombia: '#eab308', bbva: '#1d4ed8', nu: '#820ad1', rappicard: '#ff441f' };
+
+  // Text patterns (matched against the accent-free, lowercase merchant)
+  const REVERSAL_WORDS = ['anulacion','anulada','anulado','reverso','reversion','reversada','reversado','devolucion','cancelacion','cancelada','cancelado','reembolso','reintegro','contracargo'];
+  const REVERSAL_RE = new RegExp(`\\b(${REVERSAL_WORDS.join('|')})\\b`);
+  const INTERNAL_RE = /\b(pago (de |a )?(tu |la )?(tarjeta|tc|tdc|credito|nu|rappi ?card|bbva)|abono (a )?(tarjeta|tc|tdc)|pago recibido|recibimos tu pago|transferencia (a |entre )?(cuentas? )?propias?|traslado entre cuentas)\b/;
+  const FILLER = new Set([...REVERSAL_WORDS, 'de', 'del', 'por', 'compra', 'en', 'la', 'el', 'a']);
+
+  // ---------- Helpers ----------
+  const $ = (s) => document.querySelector(s);
+  const money = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+  const fmt = (n) => money.format(Math.round(n));
+  const pad = (n) => String(n).padStart(2, '0');
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  const hash = (s) => { let h = 5381; for (let k = 0; k < s.length; k++) h = ((h << 5) + h + s.charCodeAt(k)) | 0; return (h >>> 0).toString(36); };
+  const monthKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  const shiftKey = (key, n) => { const [y, m] = key.split('-').map(Number); return monthKey(new Date(y, m - 1 + n, 1)); };
+  const keyLabel = (key, short) => { const [y, m] = key.split('-').map(Number); return short ? MONTHS_SHORT[m - 1] : `${MONTHS[m - 1]} ${y}`; };
+  const daysInMonth = (key) => { const [y, m] = key.split('-').map(Number); return new Date(y, m, 0).getDate(); };
+  const sumBy = (rows, keyFn) => rows.reduce((acc, r) => { const k = keyFn(r); acc[k] = (acc[k] || 0) + r.v; return acc; }, {});
+  const total = (rows) => rows.reduce((s, r) => s + r.v, 0);
+  const bankKey = (b) => b.toLowerCase().replace(/\s+/g, '');
+  const bankClass = (b) => BANK_STYLE[bankKey(b)] || 'bg-slate-100 text-slate-700 dark:bg-slate-700/40 dark:text-slate-300';
+  const shortDate = (d) => `${pad(d.getDate())} ${MONTHS_SHORT[d.getMonth()].toLowerCase()}`;
+  const timeFmt = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const store = {
+    get(k, fb) { try { const v = localStorage.getItem(k); return v == null ? fb : JSON.parse(v); } catch { return fb; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
+  };
+
+  // Accepts 45000, "45000", "$45,000.00", "45.000,00", "$ 45.000"
+  function parseAmount(v) {
+    if (typeof v === 'number') return v;
+    let s = String(v ?? '').replace(/[^\d.,-]/g, '');
+    if (!s) return NaN;
+    const lastDot = s.lastIndexOf('.'), lastComma = s.lastIndexOf(',');
+    if (lastDot > -1 && lastComma > -1) {
+      const dec = lastDot > lastComma ? '.' : ',';
+      s = s.split(dec === '.' ? ',' : '.').join('').replace(dec, '.');
+    } else if (lastDot > -1 || lastComma > -1) {
+      const sep = lastDot > -1 ? '.' : ',';
+      const parts = s.split(sep);
+      // a single separator followed by exactly 2 digits is a decimal; anything else is thousands
+      s = parts.length === 2 && parts[1].length === 2 ? parts.join('.') : parts.join('');
+    }
+    return parseFloat(s);
+  }
+
+  // Accepts "2026-10-02T18:30", "2026-10-02", "02/10/2026 18:30", "02/10/26"
+  function parseDate(v) {
+    const s = String(v ?? '').trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?/);
+    if (m) return new Date(+m[1], m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:[ T](\d{1,2}):(\d{2}))?/);
+    if (m) { let y = +m[3]; if (y < 100) y += 2000; return new Date(y, m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0)); }
+    const d = new Date(s);
+    return isNaN(d) ? null : d;
+  }
+
+  function autoCategory(merchant) {
+    const m = ` ${merchant.toLowerCase()} `;
+    for (const [cat, words] of Object.entries(CATEGORY_RULES)) if (words.some((w) => m.includes(w))) return cat;
+    return 'Otros';
+  }
+
+  function bankName(b) {
+    const s = norm(b || '');
+    if (s.includes('bbva')) return 'BBVA';
+    if (s.includes('bancolombia')) return 'Bancolombia';
+    if (s.includes('rappi')) return 'RappiCard';
+    if (/^nu( |bank|$)/.test(s)) return 'Nu';
+    return String(b || 'Otro').trim();
+  }
+
+  const acctLabel = (bank, card) => {
+    if (!card) return bank;
+    const alias = CONFIG.CARDS[card];
+    return `${bank} ${alias ? alias + ' ' : ''}··${card}`;
+  };
+
+  function kindOf(t, merchant) {
+    const ty = norm(t.type || ''), m = norm(merchant);
+    if (/^(declined|rechazad|no exitosa|fallid)/.test(ty)) return 'declined';
+    if (/^(refund|devolucion|reverso|reembolso|anulacion)/.test(ty) || REVERSAL_RE.test(m)) return 'refund';
+    if (/^(payment|pago|transfer|traslado|interno)/.test(ty) || INTERNAL_RE.test(m)) return 'internal';
+    if (/^(income|ingreso|abono)/.test(ty)) return 'income';
+    return 'purchase';
+  }
+
+  // ---------- Normalize raw records ----------
+  function normalize(raw) {
+    const seen = {};
+    let skipped = 0;
+    const rows = [];
+    raw.forEach((t, i) => {
+      const date = parseDate(t && t.date);
+      const amount = Math.abs(parseAmount(t && t.amount));
+      if (!date || !isFinite(amount)) { skipped++; return; }
+      const merchant = String(t.merchant || '').replace(/[-_=*]{3,}/g, ' ').replace(/\s+/g, ' ').trim() || 'Sin descripción';
+      const bank = bankName(t.bank);
+      const card = String(t.card ?? '').replace(/\D/g, '').slice(-4);
+      const kind = kindOf(t, merchant);
+      let category = String(t.category || '').trim();
+      if (!category || /^(otro|otros|other|sin categor)/i.test(category)) {
+        category = kind === 'income' ? 'Ingresos' : kind === 'internal' ? 'Entre cuentas' : autoCategory(norm(merchant));
+      }
+      const base = hash(`${bank}|${card}|${amount}|${norm(merchant)}|${date.getTime()}`);
+      seen[base] = (seen[base] || 0) + 1;
+      rows.push({
+        i, id: seen[base] > 1 ? `${base}-${seen[base]}` : base,
+        // Apple Pay sends the Wallet card name ("BBVA Mastercard Black") instead of digits: show that name
+        bank, card, acct: card || norm(t.bank || '') === norm(bank) ? acctLabel(bank, card) : String(t.bank).trim(), amount, merchant, category, kind, date, key: monthKey(date),
+        nm: norm(merchant).split(' ').filter((w) => w && !FILLER.has(w)).join(' '),
+        pending: /pend|preaut|reten/i.test(String(t.status || '')),
+        source: norm(t.source || ''),
+      });
+    });
+    return { rows, skipped };
+  }
+
+  // ---------- Smart reconciliation ----------
+  // Sets on every row: status (active | cancelled | matched | duplicate | replaced | internal | ignored),
+  // net (amount after partial refunds), link (the related row) and v (what it adds to spending).
+  const sameAcct = (a, b) => a.bank === b.bank && (!a.card || !b.card || a.card === b.card);
+  function similar(a, b) {
+    if (!a.nm || !b.nm) return false;
+    const ca = a.nm.replace(/ /g, ''), cb = b.nm.replace(/ /g, '');
+    if (ca.includes(cb) || cb.includes(ca)) return true;
+    const fa = a.nm.split(' ')[0], fb = b.nm.split(' ')[0];
+    return fa.length >= 3 && fa === fb;
+  }
+
+  function reconcile(rows, ov) {
+    const byDate = [...rows].sort((a, b) => a.date - b.date || a.i - b.i);
+    const kept = (r) => ov[r.id] === 'keep';
+    const live = (r) => r.status === 'active';
+    byDate.forEach((r) => {
+      r.status = String(ov[r.id] || '').startsWith('ignore') ? 'ignored' : 'active';
+      r.net = r.amount; r.link = null; r.partial = false; r.orphan = false;
+      if (r.kind === 'internal' && kept(r)) r.kind = 'purchase';
+    });
+
+    // 1. Payments to your own cards / transfers between your accounts are not spending
+    byDate.forEach((r) => { if (live(r) && r.kind === 'internal') r.status = 'internal'; });
+
+    // 2. Same charge reported twice (e.g. Apple Pay Shortcut + bank email), or the same record imported twice
+    const dupMs = CONFIG.DUP_WINDOW_MIN * 60000;
+    byDate.forEach((r, j) => {
+      if (!live(r) || kept(r)) return;
+      for (let k = j - 1; k >= 0; k--) {
+        const p = byDate[k];
+        if (r.date - p.date > dupMs) break;
+        if (!live(p) || p.kind !== r.kind || Math.abs(p.amount - r.amount) >= 1 || !sameAcct(p, r)) continue;
+        const crossSource = p.source && r.source && p.source !== r.source;
+        const sameRecord = p.date.getTime() === r.date.getTime() && similar(p, r);
+        if (crossSource || sameRecord) { r.status = 'duplicate'; r.link = p; break; }
+      }
+    });
+
+    // 3. Pre-authorizations (gas stations, hotels) replaced by the final charge
+    const preMs = CONFIG.PREAUTH_WINDOW_DAYS * 864e5;
+    byDate.forEach((r) => {
+      if (!live(r) || r.kind !== 'purchase' || !r.pending || kept(r)) return;
+      const fin = byDate.find((p) => p !== r && live(p) && p.kind === 'purchase' && !p.pending &&
+        p.date >= r.date && p.date - r.date <= preMs && sameAcct(p, r) && similar(p, r));
+      if (fin) { r.status = 'replaced'; r.link = fin; }
+    });
+
+    // 4. "Compra No Exitosa" for the same value as an earlier approved charge: the bank released it.
+    //    With no matching charge it was just a declined attempt and never counts.
+    const declMs = 3 * 864e5;
+    byDate.forEach((f) => {
+      if (!live(f) || f.kind !== 'declined') return;
+      const p = byDate.filter((p) => live(p) && p.kind === 'purchase' && !kept(p) && Math.abs(p.amount - f.amount) < 1 &&
+        p.date - f.date <= 60000 && f.date - p.date <= declMs && sameAcct(p, f) && similar(p, f)).pop();
+      if (!p) { f.status = 'declined'; return; }
+      p.status = 'cancelled'; p.net = 0; f.status = 'matched'; p.link = f; f.link = p;
+    });
+
+    // 5. Refunds / reversals cancel (fully or partially) an earlier purchase
+    const refMs = CONFIG.REFUND_WINDOW_DAYS * 864e5;
+    byDate.forEach((f) => {
+      if (!live(f) || f.kind !== 'refund') return;
+      const cands = byDate.filter((p) => live(p) && p.kind === 'purchase' && !kept(p) && p.net > 0 &&
+        p.date <= f.date && f.date - p.date <= refMs && sameAcct(p, f) && (f.nm ? similar(p, f) : Math.abs(p.net - f.amount) < 1));
+      const exact = cands.filter((p) => Math.abs(p.net - f.amount) < 1);
+      const pool = exact.length ? exact : cands.filter((p) => p.net > f.amount);
+      const p = pool.sort((a, b) => b.date - a.date)[0];
+      if (!p) { f.orphan = true; return; }   // no purchase found: the money still came back, so it reduces spending
+      if (exact.length) { p.status = 'cancelled'; p.net = 0; } else { p.net -= f.amount; p.partial = true; }
+      f.status = 'matched'; p.link = f; f.link = p;
+    });
+
+    byDate.forEach((r) => {
+      r.v = r.status !== 'active' ? 0 : r.kind === 'purchase' ? r.net : r.kind === 'refund' ? -r.amount : 0;
+    });
+  }
+  const isSpend = (r) => r.status === 'active' && (r.kind === 'purchase' || r.kind === 'refund');
+
+  // ---------- Manual overrides (per device for now) ----------
+  let overrides = store.get('mf.overrides', {});
+  const saveOverrides = () => store.set('mf.overrides', overrides);
+
+  // Reverse whatever the rules decided for row r
+  function undoAuto(r) {
+    if (r.status === 'matched') r = r.link;
+    // A purchase + its reversal are undone as a pair; the refund remembers its purchase so both revert together
+    if (r.status === 'cancelled' || r.partial) { overrides[r.id] = 'keep'; overrides[r.link.id] = `ignore:${r.id}`; }
+    else if (r.orphan) overrides[r.id] = 'ignore';
+    else overrides[r.id] = 'keep';
+    saveOverrides();
+    setData(rawCache);
+  }
+
+  function setOverride(id, value) {
+    if (value) overrides[id] = value;
+    else {
+      const pair = String(overrides[id] || '').split(':')[1];
+      delete overrides[id];
+      if (pair) delete overrides[pair];
+      Object.keys(overrides).forEach((k) => { if (overrides[k] === `ignore:${id}`) delete overrides[k]; });
+    }
+    saveOverrides();
+    setData(rawCache);
+  }
+
+  // ---------- State ----------
+  let rawCache = [], data = [], byId = {}, expenses = [], keys = [], minKey, maxKey, catOrder = [];
+  const now = new Date();
+  const curKey = monthKey(now);
+  const state = { month: null, q: '', bank: '', cat: '', scope: 'month', sort: 'date' };
+  const catColor = (c) => (c === 'Otros' ? OTHER_COLOR : PALETTE[catOrder.filter((x) => x !== 'Otros').indexOf(c) % PALETTE.length] || OTHER_COLOR);
+
+  function setData(raw) {
+    rawCache = raw;
+    const { rows, skipped } = normalize(raw);
+    reconcile(rows, overrides);
+    data = rows;
+    byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expenses = data.filter(isSpend);
+    keys = [...new Set(data.map((t) => t.key))].sort();
+    minKey = keys[0] || curKey;
+    maxKey = [curKey, keys[keys.length - 1] || curKey].sort().pop();
+    catOrder = Object.entries(sumBy(expenses, (t) => t.category)).sort((a, b) => b[1] - a[1]).map((e) => e[0]);
+    if (!state.month) state.month = data.some((t) => t.key === curKey) ? curKey : (keys[keys.length - 1] || curKey);
+
+    const w = $('#warnBox');
+    w.classList.toggle('hidden', !skipped);
+    w.textContent = skipped ? `${skipped} registro(s) ignorado(s) por fecha o monto inválido.` : '';
+
+    // Filter dropdowns: bank → its cards
+    const accts = {};
+    data.forEach((t) => { (accts[t.bank] = accts[t.bank] || new Set()).add(t.acct); });
+    $('#fBank').innerHTML = '<option value="">Todas las tarjetas</option>' + Object.keys(accts).sort().map((b) => {
+      const list = [...accts[b]].sort();
+      if (list.length === 1) return `<option value="b:${esc(b)}">${esc(list[0])}</option>`;
+      return `<optgroup label="${esc(b)}"><option value="b:${esc(b)}">Todo ${esc(b)}</option>${list.map((a) => `<option value="a:${esc(a)}">${esc(a.slice(b.length + 1))}</option>`).join('')}</optgroup>`;
+    }).join('');
+    const cats = [...new Set(data.map((t) => t.category))].sort((a, b) => a.localeCompare(b, 'es'));
+    $('#fCat').innerHTML = '<option value="">Todas las categorías</option>' + cats.map((c) => `<option>${esc(c)}</option>`).join('');
+    $('#fBank').value = state.bank; if ($('#fBank').value !== state.bank) state.bank = '';
+    $('#fCat').value = state.cat;   if ($('#fCat').value !== state.cat) state.cat = '';
+
+    render();
+  }
+
+  // ---------- Charts ----------
+  const dark = matchMedia('(prefers-color-scheme: dark)');
+  let catChart = null, trendChart = null;
+
+  function buildCharts() {
+    if (typeof Chart === 'undefined') return;
+    catChart && catChart.destroy();
+    trendChart && trendChart.destroy();
+    const isDark = dark.matches;
+    Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+    Chart.defaults.color = isDark ? '#94a3b8' : '#64748b';
+
+    catChart = new Chart($('#catChart'), {
+      type: 'doughnut',
+      data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderWidth: 0, hoverOffset: 6 }] },
+      options: {
+        maintainAspectRatio: false, cutout: '70%',
+        plugins: { legend: { display: false }, tooltip: { enabled: true, callbacks: { label: (c) => ` ${c.label}: ${fmt(c.raw)}` } } },
+        onClick: (_, els) => { if (els.length && catChart.data.labels[els[0].index] !== '—') toggleCat(catChart.data.labels[els[0].index]); },
+      },
+    });
+
+    trendChart = new Chart($('#trendChart'), {
+      type: 'bar',
+      data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderRadius: 8, borderSkipped: false, maxBarThickness: 36 }] },
+      options: {
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => ` ${fmt(c.raw)}` } } },
+        scales: {
+          x: { grid: { display: false }, border: { display: false } },
+          y: { grid: { color: isDark ? 'rgba(148,163,184,.12)' : 'rgba(100,116,139,.12)' }, border: { display: false },
+               ticks: { maxTicksLimit: 4, callback: (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${Math.round(v / 1e3)}k` : v) } },
+        },
+        onClick: (_, els) => { if (els.length) { state.month = trendChart.$keys[els[0].index]; render(); } },
+      },
+    });
+    if (state.month) render();
+  }
+  dark.addEventListener ? dark.addEventListener('change', buildCharts) : dark.addListener(buildCharts);
+
+  // ---------- Render ----------
+  function render() {
+    const monthExp = expenses.filter((t) => t.key === state.month);
+    const monthInc = data.filter((t) => t.key === state.month && t.kind === 'income' && t.status === 'active');
+    const isCurrent = state.month === curKey;
+
+    // Header
+    $('#monthLabel').textContent = keyLabel(state.month);
+    $('#prevMonth').disabled = state.month <= minKey;
+    $('#nextMonth').disabled = state.month >= maxKey;
+
+    // KPI: total
+    const spent = total(monthExp);
+    const nBuys = monthExp.filter((t) => t.kind === 'purchase').length;
+    $('#kpiTotal').textContent = fmt(spent);
+    const inc = monthInc.reduce((s, r) => s + r.amount, 0);
+    $('#kpiCount').textContent = `${nBuys} compra${nBuys === 1 ? '' : 's'}` + (inc ? ` · Ingresos ${fmt(inc)}` : '');
+
+    // KPI: delta vs previous month (same period if the month is still running)
+    const prevKey = shiftKey(state.month, -1);
+    const cutoffDay = isCurrent ? now.getDate() : 31;
+    const prevSpent = total(expenses.filter((t) => t.key === prevKey && t.date.getDate() <= cutoffDay));
+    const delta = $('#kpiDelta');
+    if (prevSpent > 0) {
+      const pct = ((spent - prevSpent) / prevSpent) * 100;
+      delta.textContent = `${pct > 0 ? '▲' : pct < 0 ? '▼' : ''} ${Math.abs(pct).toFixed(0)}%`;
+      delta.className = `text-2xl font-bold tabular mt-1 ${pct > 0 ? 'text-red-500' : 'text-emerald-500'}`;
+    } else {
+      delta.textContent = '—';
+      delta.className = 'text-2xl font-bold tabular mt-1';
+    }
+    $('#kpiDeltaSub').textContent = `${isCurrent ? `Al día ${cutoffDay} de ` : ''}${keyLabel(prevKey, true)}: ${fmt(prevSpent)}`;
+
+    // KPI: daily average
+    const days = isCurrent ? now.getDate() : daysInMonth(state.month);
+    $('#kpiDaily').textContent = fmt(spent / days);
+    $('#kpiDailySub').textContent = isCurrent ? `${days} día${days === 1 ? '' : 's'} transcurrido${days === 1 ? '' : 's'}` : `${days} días`;
+
+    // Category breakdown (a category can go negative only through an unmatched refund — leave it out of the chart)
+    const byCat = Object.entries(sumBy(monthExp, (t) => t.category)).filter((e) => e[1] > 0).sort((a, b) => b[1] - a[1]);
+    const catSum = byCat.reduce((s, e) => s + e[1], 0);
+    if (byCat.length) {
+      $('#kpiTop').textContent = byCat[0][0];
+      $('#kpiTopSub').textContent = `${fmt(byCat[0][1])} · ${Math.round((byCat[0][1] / catSum) * 100)}%`;
+    } else {
+      $('#kpiTop').textContent = '—';
+      $('#kpiTopSub').textContent = 'Sin gastos';
+    }
+    $('#catCenter').textContent = fmt(spent);
+
+    if (catChart) {
+      const ds = catChart.data.datasets[0];
+      if (byCat.length) {
+        catChart.data.labels = byCat.map((e) => e[0]);
+        ds.data = byCat.map((e) => e[1]);
+        ds.backgroundColor = byCat.map((e) => (state.cat && state.cat !== e[0] ? catColor(e[0]) + '40' : catColor(e[0])));
+        catChart.options.plugins.tooltip.enabled = true;
+      } else {
+        catChart.data.labels = ['—'];
+        ds.data = [1];
+        ds.backgroundColor = [dark.matches ? '#1e293b' : '#e2e8f0'];
+        catChart.options.plugins.tooltip.enabled = false;
+      }
+      catChart.update();
+    }
+
+    $('#catLegend').innerHTML = byCat.length
+      ? byCat.map(([c, v]) => `
+        <button data-cat="${esc(c)}" class="w-full flex items-center gap-3 py-2 px-2 -mx-2 rounded-lg text-left text-sm transition ${state.cat === c ? 'bg-indigo-50 dark:bg-indigo-500/10' : 'hover:bg-slate-50 dark:hover:bg-slate-800/60'} ${state.cat && state.cat !== c ? 'opacity-50' : ''}">
+          <span class="h-2.5 w-2.5 rounded-full shrink-0" style="background:${catColor(c)}"></span>
+          <span class="flex-1 truncate">${esc(c)}</span>
+          <span class="tabular font-medium">${fmt(v)}</span>
+          <span class="tabular text-xs text-slate-500 dark:text-slate-400 w-9 text-right">${Math.round((v / catSum) * 100)}%</span>
+        </button>`).join('')
+      : '<p class="py-6 text-center text-sm text-slate-500 dark:text-slate-400">No hay gastos este mes.</p>';
+
+    // 6-month trend
+    if (trendChart) {
+      const tKeys = [-5, -4, -3, -2, -1, 0].map((n) => shiftKey(state.month, n));
+      const tTotals = sumBy(expenses, (t) => t.key);
+      trendChart.$keys = tKeys;
+      trendChart.data.labels = tKeys.map((k) => keyLabel(k, true));
+      trendChart.data.datasets[0].data = tKeys.map((k) => Math.max(0, tTotals[k] || 0));
+      trendChart.data.datasets[0].backgroundColor = tKeys.map((k) => (k === state.month ? '#6366f1' : dark.matches ? '#334155' : '#cbd5e1'));
+      trendChart.update();
+    }
+
+    // Split by card for the month
+    const bankOf = {};
+    monthExp.forEach((t) => { bankOf[t.acct] = t.bank; });
+    const byAcct = Object.entries(sumBy(monthExp, (t) => t.acct)).filter((e) => e[1] > 0).sort((a, b) => b[1] - a[1]);
+    const acctSum = byAcct.reduce((s, e) => s + e[1], 0);
+    $('#bankSplit').innerHTML = byAcct.length ? byAcct.map(([a, v]) => `
+      <div>
+        <div class="flex justify-between gap-2 text-xs mb-1"><span class="font-medium truncate">${esc(a)}</span><span class="tabular text-slate-500 dark:text-slate-400">${fmt(v)}</span></div>
+        <div class="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+          <div class="h-full rounded-full" style="width:${(v / acctSum) * 100}%;background:${BANK_BAR[bankKey(bankOf[a])] || OTHER_COLOR}"></div>
+        </div>
+      </div>`).join('') : '<p class="text-xs text-slate-500 dark:text-slate-400">Sin gastos este mes.</p>';
+
+    renderReview();
+    renderTable();
+  }
+
+  // ---------- Automatic adjustments list ----------
+  const STATUS_BADGE = {
+    cancelled: 'Anulada', matched: 'Reverso', duplicate: 'Duplicado', replaced: 'Preautorización',
+    internal: 'Entre cuentas', ignored: 'Excluido', declined: 'Rechazada',
+  };
+
+  function describe(r) {
+    const L = r.link;
+    if (String(overrides[r.id] || '').startsWith('ignore')) return { text: `Excluido por ti de los cálculos.`, action: 'Volver a contar', fn: 'clear' };
+    if (overrides[r.id] === 'keep') return { text: `Marcado por ti como gasto válido.`, action: 'Volver a automático', fn: 'clear' };
+    switch (true) {
+      case r.status === 'cancelled' && L.kind === 'declined': return { text: `El banco la reportó como no exitosa a las ${timeFmt(L.date)}. No suma.`, action: 'Sí la cobraron', fn: 'undo' };
+      case r.status === 'cancelled': return { text: `Anulada por un reverso del ${shortDate(L.date)}. No suma.`, action: 'Sí la cobraron', fn: 'undo' };
+      case r.partial: return { text: `Devolución parcial de ${fmt(L.amount)} el ${shortDate(L.date)}. Cuenta ${fmt(r.net)}.`, action: 'Contar completa', fn: 'undo' };
+      case r.status === 'duplicate': return { text: `Mismo cobro que el registro de las ${timeFmt(L.date)} (${esc(L.merchant)}). Se cuenta una sola vez.`, action: 'Son dos cobros', fn: 'undo' };
+      case r.status === 'replaced': return { text: `Preautorización reemplazada por el cobro final de ${fmt(L.amount)}.`, action: 'Contar también', fn: 'undo' };
+      case r.status === 'internal': return { text: `Pago de tarjeta o transferencia entre tus cuentas. No es gasto.`, action: 'Es un gasto', fn: 'undo' };
+      case r.orphan: return { text: `Devolución sin compra asociada: resta ${fmt(r.amount)} a tus gastos.`, action: 'Ignorar', fn: 'undo' };
+      default: return null;
+    }
+  }
+
+  function renderReview() {
+    const items = data
+      .filter((r) => r.key === state.month && r.status !== 'matched')
+      .map((r) => ({ r, d: describe(r) }))
+      .filter((x) => x.d)
+      .sort((a, b) => b.r.date - a.r.date);
+    const box = $('#review');
+    box.classList.toggle('hidden', !items.length);
+    $('#reviewCount').textContent = items.length;
+    const saved = items.reduce((s, { r }) => s + (r.status === 'active' ? 0 : r.kind === 'income' ? 0 : r.amount) + (r.partial ? r.amount - r.net : 0), 0);
+    $('#reviewSaved').textContent = saved ? `${fmt(saved)} no sumados` : '';
+    $('#reviewList').innerHTML = items.map(({ r, d }) => `
+      <div class="p-4 flex items-start gap-3">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-medium truncate">${esc(r.merchant)}</span>
+            <span class="tabular font-semibold whitespace-nowrap ${r.status === 'active' ? '' : 'line-through text-slate-400'}">${r.kind === 'refund' ? '−' : ''}${fmt(r.amount)}</span>
+          </div>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">${shortDate(r.date)} · ${esc(r.acct)}</p>
+          <p class="text-sm mt-1">${d.text}</p>
+        </div>
+        <button data-id="${r.id}" data-fn="${d.fn}" class="shrink-0 h-9 px-3 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700">${d.action}</button>
+      </div>`).join('');
+  }
+
+  function renderTable() {
+    const q = state.q.trim().toLowerCase();
+    let rows = data.filter((t) =>
+      (state.scope === 'all' || t.key === state.month) &&
+      (!state.bank || (state.bank.startsWith('b:') ? t.bank === state.bank.slice(2) : t.acct === state.bank.slice(2))) &&
+      (!state.cat || t.category === state.cat) &&
+      (!q || `${t.merchant} ${t.category} ${t.acct}`.toLowerCase().includes(q)));
+    rows.sort(state.sort === 'amount' ? (a, b) => b.amount - a.amount : (a, b) => b.date - a.date || b.i - a.i);
+
+    const dateFmt = (d) => `${shortDate(d)}${state.scope === 'all' ? ` ${String(d.getFullYear()).slice(2)}` : ''}`;
+
+    $('#txBody').innerHTML = rows.map((t) => {
+      const income = t.kind === 'income' && t.status === 'active';
+      const off = t.status !== 'active';
+      const badge = (t.status === 'matched' && t.kind === 'declined' ? 'No exitosa' : STATUS_BADGE[t.status]) || (t.partial ? 'Dev. parcial' : t.orphan ? 'Devolución' : '');
+      const badgeHtml = badge ? `<span class="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-wide ${off ? 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'}">${badge}</span>` : '';
+      let amt;
+      if (off) amt = `<span class="line-through text-slate-400">${fmt(t.amount)}</span>`;
+      else if (income) amt = `<span class="text-emerald-600 dark:text-emerald-400">+${fmt(t.amount)}</span>`;
+      else if (t.kind === 'refund') amt = `<span class="text-emerald-600 dark:text-emerald-400">−${fmt(t.amount)}</span>`;
+      else if (t.partial) amt = `${fmt(t.net)}<div class="text-[11px] font-normal line-through text-slate-400">${fmt(t.amount)}</div>`;
+      else amt = fmt(t.amount);
+      return `
+      <tr data-id="${t.id}" class="border-t border-slate-100 dark:border-slate-800 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40 ${off ? 'opacity-60' : ''}">
+        <td class="hidden sm:table-cell py-3 pl-4 pr-2 whitespace-nowrap text-slate-500 dark:text-slate-400 tabular">${dateFmt(t.date)} <span class="text-xs opacity-70">${timeFmt(t.date)}</span></td>
+        <td class="py-3 pl-4 sm:pl-2 pr-2 max-w-0 w-full">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="sm:hidden h-2 w-2 rounded-full shrink-0" style="background:${catColor(t.category)}"></span>
+            <span class="font-medium truncate ${off ? 'line-through' : ''}">${esc(t.merchant)}</span>
+            ${badgeHtml}
+          </div>
+          <div class="sm:hidden text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">${dateFmt(t.date)} · ${esc(t.category)} · ${esc(t.acct)}</div>
+        </td>
+        <td class="hidden sm:table-cell py-3 px-2 whitespace-nowrap">
+          <span class="inline-flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" style="background:${catColor(t.category)}"></span>${esc(t.category)}</span>
+        </td>
+        <td class="hidden sm:table-cell py-3 px-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${bankClass(t.bank)}">${esc(t.acct)}</span></td>
+        <td class="py-3 pl-2 pr-4 text-right whitespace-nowrap tabular font-semibold">${amt}</td>
+      </tr>`;
+    }).join('');
+
+    const empty = $('#txEmpty');
+    empty.classList.toggle('hidden', rows.length > 0);
+    empty.textContent = data.length
+      ? 'No hay movimientos con estos filtros.'
+      : dataUrl()
+        ? 'Aún no hay movimientos. Llegarán automáticamente con cada compra.'
+        : 'Toca "Conectar" al final de la página y pega el enlace de tu Google Sheet.';
+
+    $('#txFooter').innerHTML = `<span>${rows.length} movimiento${rows.length === 1 ? '' : 's'}</span><span>Gastos: <b class="text-slate-700 dark:text-slate-200">${fmt(total(rows.filter(isSpend)))}</b></span>`;
+    $('#clearFilters').classList.toggle('hidden', !(state.q || state.bank || state.cat || state.scope !== 'month'));
+  }
+
+  function toggleCat(c) {
+    state.cat = state.cat === c ? '' : c;
+    $('#fCat').value = state.cat;
+    render();
+  }
+
+  function onRowTap(id) {
+    const r = byId[id];
+    if (!r) return;
+    if (overrides[id]) {
+      if (confirm(`¿Quitar tu ajuste manual de "${r.merchant}" y dejar que el sistema decida?`)) setOverride(id, null);
+    } else if (r.status === 'active' && !r.partial && !r.orphan) {
+      if (confirm(`¿Excluir "${r.merchant}" (${fmt(r.amount)}) de tus cálculos?`)) setOverride(id, 'ignore');
+    } else {
+      const d = describe(r.status === 'matched' ? r.link : r);
+      if (d && confirm(`${r.merchant}: ${d.text.replace(/<[^>]+>/g, '')}\n\n¿${d.action}?`)) undoAuto(r);
+    }
+  }
+
+  // ---------- Events ----------
+  $('#prevMonth').onclick = () => { state.month = shiftKey(state.month, -1); render(); };
+  $('#nextMonth').onclick = () => { state.month = shiftKey(state.month, 1); render(); };
+  $('#todayMonth').onclick = () => { state.month = curKey; render(); };
+  $('#search').oninput = (e) => { state.q = e.target.value; renderTable(); };
+  $('#fScope').onchange = (e) => { state.scope = e.target.value; renderTable(); };
+  $('#fBank').onchange = (e) => { state.bank = e.target.value; renderTable(); };
+  $('#fCat').onchange = (e) => { state.cat = e.target.value; render(); };
+  $('#fSort').onchange = (e) => { state.sort = e.target.value; renderTable(); };
+  $('#catLegend').onclick = (e) => { const b = e.target.closest('[data-cat]'); if (b) toggleCat(b.dataset.cat); };
+  $('#txBody').onclick = (e) => { const tr = e.target.closest('tr[data-id]'); if (tr) onRowTap(tr.dataset.id); };
+  $('#reviewList').onclick = (e) => {
+    const b = e.target.closest('button[data-id]');
+    if (!b) return;
+    const r = byId[b.dataset.id];
+    if (b.dataset.fn === 'clear') setOverride(r.id, null);
+    else undoAuto(r);
+  };
+  $('#clearFilters').onclick = () => {
+    Object.assign(state, { q: '', bank: '', cat: '', scope: 'month' });
+    $('#search').value = ''; $('#fBank').value = ''; $('#fCat').value = ''; $('#fScope').value = 'month';
+    render();
+  };
+
+  // ---------- Load data ----------
+  const errorBox = $('#errorBox');
+  const showError = (html) => { errorBox.classList.remove('hidden'); errorBox.innerHTML = html; };
+  let lastLoad = 0;
+
+  // The Sheet URL carries a secret token, so it lives on the device (entered once), never in this public file
+  const dataUrl = () => CONFIG.DATA_URL || store.get('mf.dataUrl', '');
+
+  async function load() {
+    lastLoad = Date.now();
+    $('#connectBtn').textContent = dataUrl() ? 'Fuente' : 'Conectar';
+    if (!dataUrl()) {
+      if (typeof transactions === 'undefined' || !Array.isArray(transactions)) {
+        showError('<b>No se pudieron leer los datos.</b> El arreglo <code>transactions</code> tiene un error de sintaxis.');
+        return;
+      }
+      $('#syncLabel').textContent = 'Sin conectar';
+      setData(transactions);
+      return;
+    }
+    $('#syncLabel').textContent = 'Actualizando…';
+    try {
+      const res = await fetch(dataUrl(), { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (json && json.error) throw new Error(json.error);
+      const raw = Array.isArray(json) ? json : json.transactions;
+      if (!Array.isArray(raw)) throw new Error('formato inesperado');
+      store.set('mf.cache', { at: Date.now(), raw });
+      $('#syncLabel').textContent = `Actualizado ${timeFmt(new Date())}`;
+      setData(raw);
+    } catch (err) {
+      const cached = store.get('mf.cache', null);
+      if (cached) {
+        const at = new Date(cached.at);
+        $('#syncLabel').textContent = `Sin conexión · datos del ${shortDate(at)} ${timeFmt(at)}`;
+        setData(cached.raw);
+      } else {
+        $('#syncLabel').textContent = 'Sin datos';
+        showError(`<b>No se pudieron descargar los movimientos.</b> ${esc(err.message)}`);
+      }
+    }
+  }
+
+  $('#refreshBtn').onclick = load;
+  $('#connectBtn').onclick = () => {
+    const url = prompt('Pega el enlace de tu Google Sheet (termina en ?token=…). Déjalo vacío para ver los datos de ejemplo.', store.get('mf.dataUrl', ''));
+    if (url === null) return;
+    store.set('mf.dataUrl', url.trim());
+    errorBox.classList.add('hidden');
+    load();
+  };
+  // Opening the app from the Home Screen brings it to the foreground: pull fresh data
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Date.now() - lastLoad > 60000) load();
+  });
+
+  if (typeof Chart === 'undefined') showError('No se pudo cargar Chart.js (¿sin conexión?). La tabla funciona, pero las gráficas no.');
+  buildCharts();
+  load();
+
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+})();
+</script>
+</body>
+</html>
